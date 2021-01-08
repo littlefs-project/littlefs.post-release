@@ -1,0 +1,113 @@
+name: littlefs-fuse
+on:
+  # handle forks on push
+  push:
+    branches: [master]
+  # handle updates on post-release
+  repository_dispatch:
+    types: [post-release]
+  # allow manual trigger
+  workflow_dispatch:
+    inputs:
+      repo: {required: true}
+      version: {required: true}
+
+env:
+  LFS_FUSE_REPO: littlefs-project/littlefs-fuse
+  LFS_FUSE_BOT_REPO: ${{secrets.BOT_USER}}/littlefs-fuse
+
+jobs:
+  # The GitHub API can only create forks asynchronously, and GitHub requires
+  # a fork in order to make a PR.
+  #
+  # To work around this we just create a staging fork when we push this
+  # workflow to GitHub. It's not like there's a reason to ever delete
+  # these staging forks.
+  littlefs-fuse-fork:
+    runs-on: ubuntu-18.04
+    if: ${{github.event_name == 'push'}}
+    steps:
+      - name: create-fork
+        run: |
+          curl -sS -X POST -H "authorization: token ${{secrets.BOT_TOKEN}}" \
+            "$GITHUB_API_URL/repos/$LFS_FUSE_REPO/forks" \
+            || true
+
+  # create PR to bring in the new release
+  littlefs-fuse-update:
+    runs-on: ubuntu-18.04
+    if: ${{github.event_name == 'repository_dispatch' ||
+      github.event_name == 'workflow_dispatch'}}
+    env:
+      LFS_REPO: ${{github.event.client_payload.repo ||
+        github.event.inputs.repo}}
+      LFS_VERSION: ${{github.event.client_payload.version ||
+        github.event.inputs.version}}
+    steps:
+      # checkout the staging fork we plan to use for PRs
+      - uses: actions/checkout@v2
+        with:
+          token: ${{secrets.BOT_TOKEN}}
+          repository: ${{env.LFS_FUSE_BOT_REPO}}
+          fetch-depth: 0 # need repo to be unshallowed
+
+      - name: merge-littlefs
+        run: |
+          # we need to create a PR from somewhere, so use the dependency
+          # repo itself as a staging area
+          git fetch https://github.com/$LFS_FUSE_REPO master
+          git checkout FETCH_HEAD -B lfs-$LFS_VERSION
+
+          # merge the littlefs subtree
+          git config user.name ${{secrets.BOT_USER}}
+          git config user.email ${{secrets.BOT_EMAIL}}
+          git fetch https://github.com/$LFS_REPO $LFS_VERSION
+          git subtree merge --squash --prefix=littlefs FETCH_HEAD \
+            -m "Merge release $LFS_VERSION from $LFS_REPO"
+
+      - name: create-pr
+        run: |
+          # stage PR
+          git push origin lfs-$LFS_VERSION --force
+
+          # create PR
+          #
+          # Note if there's a "Changes" section we use that, otherwise we
+          # just copy the full release notes. The "Changes" section usually
+          # contains the machine generated info on what's changed and probably
+          # won't be editted later
+          #
+          export TITLE="Bring in littlefs $LFS_VERSION"
+          export BODY="$(curl -sS \
+            "$GITHUB_API_URL/repos/$LFS_REPO/releases/tags/$LFS_VERSION" \
+            | jq -r '
+              "Beep boop, this is an automatic PR to bring in " +
+                "littlefs [`\(env.LFS_VERSION)`](\(.html_url)). " +
+                "My script is running [here](https://github.com/" +
+                  "\(env.GITHUB_REPOSITORY)/actions/" +
+                  "runs/\(env.GITHUB_RUN_ID)).\n" +
+              "\n" +
+              "Maintainers should be able to edit this PR if needed.\n" +
+              "\n" +
+              "### Release notes\n" +
+              "\n" +
+              "\(.html_url)\n" +
+              "\n" +
+              "### Changes\n" +
+              "\n" +
+              "\((.body | capture(
+                  "(^|\\n)#+ +Changes\\s*\\n(?<changes>.*?)\\s*(###|$)";
+                  "m").changes)
+                // .body)\n"')"
+
+          [ -n "$TITLE" -a -n "$BODY" ] || exit 0
+          curl -sS -X POST -H "authorization: token ${{secrets.BOT_TOKEN}}" \
+            "$GITHUB_API_URL/repos/$LFS_FUSE_REPO/pulls" \
+            -d "$(jq -n '{
+              base: "master",
+              head: ("${{secrets.BOT_USER}}:lfs-" + env.LFS_VERSION),
+              title: env.TITLE,
+              body: env.BODY,
+              maintainer_can_modify: true}' \
+              | tee /dev/stderr)"
+
