@@ -1,4 +1,4 @@
-name: littlefs-fuse
+postrelase.githubworkflowsname: littlefs-fuse
 on:
   # handle forks on push
   push:
