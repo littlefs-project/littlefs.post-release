@@ -24,7 +24,7 @@ jobs:
   # workflow to GitHub. It's not like there's a reason to ever delete
   # these staging forks.
   littlefs-fuse-fork:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: ${{github.event_name == 'push'}}
     steps:
       - name: create-fork
@@ -35,7 +35,7 @@ jobs:
 
   # create PR to bring in the new release
   littlefs-fuse-update:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     if: ${{github.event_name == 'repository_dispatch' ||
       github.event_name == 'workflow_dispatch'}}
     env:
